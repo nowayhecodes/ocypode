@@ -42,5 +42,43 @@ async fn service_handler(path: &str) -> Result<Response<Body>, hyper::Error> {
     }
 }
 
+async fn handle_request(
+    req: Request<Body>,
+    limiter: Arc<RateLimiter>,
+) -> Result<Response<Body>, hyper::Error> {
+    let remote_addr = req.remote_addr().expect("Remote address missing");
+
+    if !limiter.allow(remote_addr) {
+        return Ok(Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .body(Body::from("Too many requests"))
+            .unwrap());
+    }
+
+    println!(
+        "Received request from {}:{}",
+        remote_addr.ip(),
+        remote_addr.port()
+    );
+    let response = service_handler(req.uri().path()).await;
+    response
+}
+
 #[tokio::main]
-async fn main() {}
+async fn main() {
+    let limiter = Arc::new(RateLimiter::new());
+
+    let make_srv = make_service_fn(move |_conn| {
+        let limiter = Arc::clone(&limiter);
+        let service = service_fn(move |req| handle_request(req, Arc::clone(&limiter)));
+        async { Ok::<_, hyper::Error>(service) }
+    });
+
+    let addr = ([127, 0, 0, 1], 8080).into();
+    let server = Server::bind(&addr).serve(make_srv);
+    println!("Ocypode Gateway listening on http://{}", addr);
+
+    if let Err(e) = server.await {
+        eprintln!("server error: {}", e);
+    }
+}
